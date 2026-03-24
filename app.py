@@ -23,7 +23,14 @@ load_dotenv()
 # Config
 # ──────────────────────────────────────────────────────────────────────────────
 
-TWITTER_BEARER_TOKEN = os.getenv("TWITTER_BEARER_TOKEN", "")
+# Prefer Streamlit secrets, fall back to environment variable
+def _get_bearer_token() -> str:
+    try:
+        return st.secrets["TWITTER_BEARER_TOKEN"]
+    except (KeyError, FileNotFoundError):
+        return os.getenv("TWITTER_BEARER_TOKEN", "")
+
+TWITTER_BEARER_TOKEN = _get_bearer_token()
 
 # Twitter user IDs (stable even if handles change)
 TWITTER_USERS = {
