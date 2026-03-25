@@ -9,12 +9,11 @@ import streamlit as st
 from streamlit_autorefresh import st_autorefresh
 
 from scraper import (
-    TWITTER_USERS,
+    HANDLES,
     RECENT_THRESHOLD,
     fetch_tweets,
     fetch_truth_social,
     demo_posts,
-    get_bearer_token,
 )
 
 REFRESH_INTERVAL_MS = 60_000  # 1 minute
@@ -186,21 +185,11 @@ st.markdown(
 
 # ── Fetch ────────────────────────────────────────────────────────────────────
 
-bearer = get_bearer_token(st.secrets)
-
 with st.spinner("Fetching posts..."):
-    hegseth_tweets = fetch_tweets(
-        TWITTER_USERS["Pete Hegseth"]["id"],
-        TWITTER_USERS["Pete Hegseth"]["handle"],
-        bearer,
-    )
-    trump_tweets = fetch_tweets(
-        TWITTER_USERS["Donald Trump"]["id"],
-        TWITTER_USERS["Donald Trump"]["handle"],
-        bearer,
-    )
-    hegseth_truth = fetch_truth_social("Pete Hegseth")
-    trump_truth = fetch_truth_social("Donald Trump")
+    hegseth_tweets = fetch_tweets(HANDLES["Pete Hegseth"])
+    trump_tweets   = fetch_tweets(HANDLES["Donald Trump"])
+    hegseth_truth  = fetch_truth_social("Pete Hegseth")
+    trump_truth    = fetch_truth_social("Donald Trump")
 
 def _or_demo(posts, name, platform):
     if not posts or (len(posts) == 1 and "error" in posts[0]):

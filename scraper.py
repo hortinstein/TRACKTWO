@@ -1,27 +1,26 @@
 """
 scraper.py — shared data fetching for TRACKTWO.
 Used by both app.py (Streamlit UI) and api.py (JSON endpoint).
+
+No API keys required. Twitter/X is scraped via public Nitter RSS feeds;
+Truth Social is scraped via its own public RSS feeds.
 """
 
 import html
-import os
 import re
 import xml.etree.ElementTree as ET
 from datetime import datetime, timedelta, timezone
 from email.utils import parsedate_to_datetime
 
 import requests
-from dotenv import load_dotenv
-
-load_dotenv()
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Config
 # ──────────────────────────────────────────────────────────────────────────────
 
-TWITTER_USERS = {
-    "Pete Hegseth": {"handle": "PeteHegseth", "id": "34685502"},
-    "Donald Trump": {"handle": "realDonaldTrump", "id": "25073877"},
+HANDLES = {
+    "Pete Hegseth": "PeteHegseth",
+    "Donald Trump": "realDonaldTrump",
 }
 
 TRUTH_SOCIAL_RSS = {
@@ -29,101 +28,120 @@ TRUTH_SOCIAL_RSS = {
     "Donald Trump": "https://truthsocial.com/@realDonaldTrump/feed.rss",
 }
 
+# Public Nitter instances — tried in order, first success wins
+NITTER_INSTANCES = [
+    "https://nitter.privacydev.net",
+    "https://nitter.poast.org",
+    "https://nitter.net",
+    "https://nitter.it",
+    "https://nitter.1d4.us",
+    "https://nitter.fdn.fr",
+]
+
 RECENT_THRESHOLD = timedelta(hours=1)
 
+_HEADERS = {"User-Agent": "Mozilla/5.0 (compatible; TRACKTWO/1.0)"}
 
-def get_bearer_token(streamlit_secrets=None) -> str:
-    """
-    Resolve the Twitter Bearer Token.
-    Pass st.secrets when calling from Streamlit so it can be checked first.
-    Falls back to the TWITTER_BEARER_TOKEN environment variable.
-    """
-    if streamlit_secrets is not None:
-        try:
-            return streamlit_secrets["TWITTER_BEARER_TOKEN"]
-        except (KeyError, Exception):
-            pass
-    return os.getenv("TWITTER_BEARER_TOKEN", "")
+# ──────────────────────────────────────────────────────────────────────────────
+# Helpers
+# ──────────────────────────────────────────────────────────────────────────────
+
+def _parse_rss_items(xml_text: str, max_items: int) -> list[ET.Element]:
+    root = ET.fromstring(xml_text)
+    channel = root.find("channel")
+    items = channel.findall("item") if channel is not None else root.findall(".//item")
+    return items[:max_items]
+
+
+def _clean_html(raw: str) -> str:
+    return re.sub(r"<[^>]+>", "", html.unescape(raw)).strip()
+
+
+def _parse_date(pub_date: str) -> datetime:
+    try:
+        return parsedate_to_datetime(pub_date).astimezone(timezone.utc)
+    except Exception:
+        return datetime.now(timezone.utc)
 
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Fetchers
 # ──────────────────────────────────────────────────────────────────────────────
 
-def fetch_tweets(user_id: str, handle: str, bearer_token: str, max_results: int = 10) -> list[dict]:
-    """Fetch recent tweets via Twitter API v2."""
-    if not bearer_token:
-        return []
+def fetch_tweets(handle: str, max_items: int = 10) -> list[dict]:
+    """
+    Fetch recent tweets by scraping Nitter RSS feeds.
+    Tries each Nitter instance in NITTER_INSTANCES until one succeeds.
+    No API key required.
+    """
+    last_error = ""
+    for instance in NITTER_INSTANCES:
+        url = f"{instance}/{handle}/rss"
+        try:
+            resp = requests.get(url, headers=_HEADERS, timeout=8)
+            resp.raise_for_status()
+            items = _parse_rss_items(resp.text, max_items)
+            posts = []
+            for item in items:
+                title = item.findtext("title", "")
+                description = item.findtext("description", "")
+                link = item.findtext("link", "")
+                pub_date = item.findtext("pubDate", "")
+                guid = item.findtext("guid", link)
 
-    url = f"https://api.twitter.com/2/users/{user_id}/tweets"
-    params = {
-        "max_results": max_results,
-        "tweet.fields": "created_at,text,public_metrics",
-        "expansions": "author_id",
-        "exclude": "retweets,replies",
-    }
-    headers = {"Authorization": f"Bearer {bearer_token}"}
+                # Convert Nitter link → canonical x.com link
+                # e.g. https://nitter.net/PeteHegseth/status/123 → https://x.com/PeteHegseth/status/123
+                xcom_link = re.sub(
+                    r"https?://[^/]+/([^/]+/status/\d+)",
+                    r"https://x.com/\1",
+                    link,
+                )
 
-    try:
-        resp = requests.get(url, params=params, headers=headers, timeout=10)
-        resp.raise_for_status()
-        data = resp.json()
-        posts = []
-        for tweet in data.get("data", []):
-            created_at = datetime.fromisoformat(
-                tweet["created_at"].replace("Z", "+00:00")
-            )
-            posts.append(
-                {
-                    "id": tweet["id"],
-                    "text": tweet["text"],
-                    "created_at": created_at,
-                    "platform": "Twitter/X",
-                    "url": f"https://x.com/{handle}/status/{tweet['id']}",
-                    "likes": tweet.get("public_metrics", {}).get("like_count", 0),
-                    "retweets": tweet.get("public_metrics", {}).get("retweet_count", 0),
-                }
-            )
-        return posts
-    except Exception as e:
-        return [{"error": str(e)}]
+                raw = description if description else title
+                text = _clean_html(raw)
+
+                posts.append(
+                    {
+                        "id": guid,
+                        "text": text or title,
+                        "created_at": _parse_date(pub_date),
+                        "platform": "Twitter/X",
+                        "url": xcom_link,
+                        "likes": 0,
+                        "retweets": 0,
+                    }
+                )
+            return posts
+        except Exception as e:
+            last_error = f"{instance}: {e}"
+            continue
+
+    return [{"error": f"All Nitter instances failed. Last error: {last_error}"}]
 
 
 def fetch_truth_social(name: str, max_items: int = 10) -> list[dict]:
     """Fetch Truth Social posts via public RSS feed."""
     feed_url = TRUTH_SOCIAL_RSS[name]
     try:
-        headers = {"User-Agent": "Mozilla/5.0 (compatible; TRACKTWO/1.0)"}
-        resp = requests.get(feed_url, headers=headers, timeout=10)
+        resp = requests.get(feed_url, headers=_HEADERS, timeout=10)
         resp.raise_for_status()
-
-        root = ET.fromstring(resp.text)
-        channel = root.find("channel")
-        items = (
-            channel.findall("item") if channel is not None else root.findall(".//item")
-        )
-
+        items = _parse_rss_items(resp.text, max_items)
         posts = []
-        for item in items[:max_items]:
+        for item in items:
             title = item.findtext("title", "")
             description = item.findtext("description", "")
             link = item.findtext("link", "")
             pub_date = item.findtext("pubDate", "")
             guid = item.findtext("guid", link)
 
-            try:
-                created_at = parsedate_to_datetime(pub_date).astimezone(timezone.utc)
-            except Exception:
-                created_at = datetime.now(timezone.utc)
-
             raw = description if description else title
-            text = re.sub(r"<[^>]+>", "", html.unescape(raw)).strip()
+            text = _clean_html(raw)
 
             posts.append(
                 {
                     "id": guid,
                     "text": text or title,
-                    "created_at": created_at,
+                    "created_at": _parse_date(pub_date),
                     "platform": "Truth Social",
                     "url": link,
                     "likes": 0,
@@ -136,15 +154,9 @@ def fetch_truth_social(name: str, max_items: int = 10) -> list[dict]:
 
 
 def demo_posts(name: str, platform: str, count: int = 5) -> list[dict]:
-    """Placeholder posts used when real APIs are unavailable."""
+    """Placeholder posts shown when scraping fails."""
     now = datetime.now(timezone.utc)
-    handle_map = {
-        ("Pete Hegseth", "Twitter/X"): "PeteHegseth",
-        ("Donald Trump", "Twitter/X"): "realDonaldTrump",
-        ("Pete Hegseth", "Truth Social"): "PeteHegseth",
-        ("Donald Trump", "Truth Social"): "realDonaldTrump",
-    }
-    handle = handle_map.get((name, platform), "unknown")
+    handle = HANDLES.get(name, "unknown")
     posts = []
     for i in range(count):
         created = now - timedelta(minutes=i * 25)
@@ -158,8 +170,7 @@ def demo_posts(name: str, platform: str, count: int = 5) -> list[dict]:
                 "id": f"demo-{name}-{platform}-{i}",
                 "text": (
                     f"[Demo] Sample {platform} post #{i+1} from {name}. "
-                    "Set TWITTER_BEARER_TOKEN to see real tweets. "
-                    "Truth Social loads via RSS automatically."
+                    "Could not reach live data — check network or Nitter instance availability."
                 ),
                 "created_at": created,
                 "platform": platform,
@@ -173,19 +184,19 @@ def demo_posts(name: str, platform: str, count: int = 5) -> list[dict]:
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-# High-level fetch-all helper
+# High-level fetch-all
 # ──────────────────────────────────────────────────────────────────────────────
 
-def fetch_all(bearer_token: str = "") -> dict:
+def fetch_all() -> dict:
     """
     Fetch all posts for both subjects across both platforms.
-    Returns a dict suitable for JSON serialisation (datetimes as ISO strings).
-    Falls back to demo data when APIs are unavailable.
+    Returns a dict ready for JSON serialisation (datetimes as ISO strings).
+    Falls back to demo data when scraping fails.
     """
     results: dict[str, dict] = {}
 
-    for name, info in TWITTER_USERS.items():
-        tweets = fetch_tweets(info["id"], info["handle"], bearer_token)
+    for name, handle in HANDLES.items():
+        tweets = fetch_tweets(handle)
         if not tweets or (len(tweets) == 1 and "error" in tweets[0]):
             tweets = demo_posts(name, "Twitter/X")
 
@@ -201,7 +212,6 @@ def fetch_all(bearer_token: str = "") -> dict:
             "truth_social": _serialise(truth),
         }
 
-    # Merged timeline sorted newest-first
     all_posts = []
     for person in results.values():
         all_posts.extend(person["twitter"])

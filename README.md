@@ -2,6 +2,8 @@
 
 Real-time social media tracker for Pete Hegseth and Donald Trump across Twitter/X and Truth Social.
 
+**No API keys required.** All data is scraped from public RSS feeds.
+
 ## Features
 
 - **4-quadrant layout** — Twitter/X (top row) and Truth Social (bottom row) for each person
@@ -9,6 +11,13 @@ Real-time social media tracker for Pete Hegseth and Donald Trump across Twitter/
 - **Red highlighting** — posts from the last hour get a red border and background
 - **Auto-refresh** — Streamlit UI updates every 60 seconds automatically
 - **JSON API** — FastAPI endpoint serving all scraped data as JSON
+
+## How it works
+
+| Platform | Source |
+|---|---|
+| Twitter/X | Public [Nitter](https://github.com/zedeus/nitter) RSS feeds (tries multiple instances, first success wins) |
+| Truth Social | Public RSS feeds at `truthsocial.com/@handle/feed.rss` |
 
 ## Setup
 
@@ -18,49 +27,7 @@ Real-time social media tracker for Pete Hegseth and Donald Trump across Twitter/
 pip install -r requirements.txt
 ```
 
-### 2. Get a Twitter/X Bearer Token
-
-1. Go to [developer.twitter.com](https://developer.twitter.com) and create a project/app
-2. Copy the **Bearer Token** from the "Keys and Tokens" page
-3. The free Basic tier is sufficient for reading user timelines
-
-> **Note:** Truth Social posts are fetched via public RSS feeds and require no credentials.
-
-### 3. Configure credentials
-
-TRACKTWO supports two ways to provide your Bearer Token — pick one:
-
-#### Option A: Streamlit Secrets (recommended for Streamlit Cloud)
-
-```bash
-cp .streamlit/secrets.toml.example .streamlit/secrets.toml
-```
-
-Edit `.streamlit/secrets.toml`:
-
-```toml
-TWITTER_BEARER_TOKEN = "your_bearer_token_here"
-```
-
-When deploying to **Streamlit Cloud**, paste the token under **App settings → Secrets** in the same TOML format.
-
-> The JSON API reads the token from the `TWITTER_BEARER_TOKEN` environment variable (Streamlit secrets are only available inside the Streamlit process).
-
-#### Option B: Environment variable / `.env` file
-
-```bash
-cp .env.example .env
-```
-
-Edit `.env`:
-
-```env
-TWITTER_BEARER_TOKEN=your_bearer_token_here
-```
-
-The Streamlit app checks Streamlit secrets first, then falls back to the environment variable. The JSON API always uses the environment variable.
-
-### 4. Run
+### 2. Run
 
 **Streamlit UI** (port 8501):
 
@@ -128,10 +95,17 @@ Interactive docs available at `http://localhost:8502/docs` (Swagger UI) when the
 }
 ```
 
-Each post includes a `"recent": true/false` field indicating whether it was posted within the last hour.
+Each post includes `"recent": true/false` indicating whether it was posted within the last hour.
 
----
+## Nitter instances
 
-## Security
+Twitter/X scraping uses public Nitter instances tried in this order:
 
-`.streamlit/secrets.toml` and `.env` are gitignored. Never commit files containing real tokens.
+1. `nitter.privacydev.net`
+2. `nitter.poast.org`
+3. `nitter.net`
+4. `nitter.it`
+5. `nitter.1d4.us`
+6. `nitter.fdn.fr`
+
+If all instances are unreachable, the app falls back to demo placeholder posts. You can add or reorder instances in `NITTER_INSTANCES` inside `scraper.py`.
