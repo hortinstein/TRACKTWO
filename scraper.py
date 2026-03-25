@@ -39,6 +39,9 @@ NITTER_INSTANCES = [
     "https://nitter.fdn.fr",
 ]
 
+# RSSHub public instance — fallback when Nitter instances block cloud IPs
+RSSHUB_BASE = "https://rsshub.app"
+
 RECENT_THRESHOLD = timedelta(hours=1)
 
 _HEADERS = {"User-Agent": "Mozilla/5.0 (compatible; TRACKTWO/1.0)"}
@@ -69,55 +72,73 @@ def _parse_date(pub_date: str) -> datetime:
 # Fetchers
 # ──────────────────────────────────────────────────────────────────────────────
 
+def _parse_tweet_items(xml_text: str, max_items: int) -> list[dict]:
+    """Parse RSS items into tweet dicts, normalising links to x.com."""
+    items = _parse_rss_items(xml_text, max_items)
+    posts = []
+    for item in items:
+        title = item.findtext("title", "")
+        description = item.findtext("description", "")
+        link = item.findtext("link", "")
+        pub_date = item.findtext("pubDate", "")
+        guid = item.findtext("guid", link)
+
+        xcom_link = re.sub(
+            r"https?://[^/]+/([^/]+/status/\d+)",
+            r"https://x.com/\1",
+            link,
+        )
+
+        raw = description if description else title
+        text = _clean_html(raw)
+
+        posts.append(
+            {
+                "id": guid,
+                "text": text or title,
+                "created_at": _parse_date(pub_date),
+                "platform": "Twitter/X",
+                "url": xcom_link,
+                "likes": 0,
+                "retweets": 0,
+            }
+        )
+    return posts
+
+
 def fetch_tweets(handle: str, max_items: int = 10) -> list[dict]:
     """
-    Fetch recent tweets by scraping Nitter RSS feeds.
-    Tries each Nitter instance in NITTER_INSTANCES until one succeeds.
+    Fetch recent tweets via Nitter RSS, falling back to RSSHub.
+    Tries each Nitter instance first; if all fail, tries RSSHub.
     No API key required.
     """
     last_error = ""
+
+    # Try Nitter instances
     for instance in NITTER_INSTANCES:
         url = f"{instance}/{handle}/rss"
         try:
             resp = requests.get(url, headers=_HEADERS, timeout=8)
             resp.raise_for_status()
-            items = _parse_rss_items(resp.text, max_items)
-            posts = []
-            for item in items:
-                title = item.findtext("title", "")
-                description = item.findtext("description", "")
-                link = item.findtext("link", "")
-                pub_date = item.findtext("pubDate", "")
-                guid = item.findtext("guid", link)
-
-                # Convert Nitter link → canonical x.com link
-                # e.g. https://nitter.net/PeteHegseth/status/123 → https://x.com/PeteHegseth/status/123
-                xcom_link = re.sub(
-                    r"https?://[^/]+/([^/]+/status/\d+)",
-                    r"https://x.com/\1",
-                    link,
-                )
-
-                raw = description if description else title
-                text = _clean_html(raw)
-
-                posts.append(
-                    {
-                        "id": guid,
-                        "text": text or title,
-                        "created_at": _parse_date(pub_date),
-                        "platform": "Twitter/X",
-                        "url": xcom_link,
-                        "likes": 0,
-                        "retweets": 0,
-                    }
-                )
-            return posts
+            if "<item>" not in resp.text:
+                raise ValueError("No items in feed")
+            return _parse_tweet_items(resp.text, max_items)
         except Exception as e:
             last_error = f"{instance}: {e}"
             continue
 
-    return [{"error": f"All Nitter instances failed. Last error: {last_error}"}]
+    # Fallback: RSSHub (works from cloud/datacenter IPs)
+    try:
+        url = f"{RSSHUB_BASE}/twitter/user/{handle}"
+        resp = requests.get(url, headers=_HEADERS, timeout=10)
+        resp.raise_for_status()
+        if "<item>" not in resp.text:
+            raise ValueError("No items in RSSHub feed")
+        return _parse_tweet_items(resp.text, max_items)
+    except Exception as e:
+        last_error = f"RSSHub: {e}"
+
+    return [{"error": f"All sources failed. Last error: {last_error}"}]
 
 
 def fetch_truth_social(name: str, max_items: int = 10) -> list[dict]:
