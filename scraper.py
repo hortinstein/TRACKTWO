@@ -2,11 +2,13 @@
 scraper.py — shared data fetching for TRACKTWO.
 Used by both app.py (Streamlit UI) and api.py (JSON endpoint).
 
-No API keys required. Twitter/X is scraped via public Nitter RSS feeds;
-Truth Social is scraped via its own public RSS feeds.
+No API keys required.
+- Twitter/X: scraped via Twitter's own guest-token GraphQL API
+- Truth Social: scraped via public RSS feed
 """
 
 import html
+import json
 import re
 import xml.etree.ElementTree as ET
 from datetime import datetime, timedelta, timezone
@@ -18,146 +20,312 @@ import requests
 # Config
 # ──────────────────────────────────────────────────────────────────────────────
 
-HANDLES = {
-    "Pete Hegseth": "PeteHegseth",
-    "Donald Trump": "realDonaldTrump",
+# Stable numeric user IDs — won't change even if handles do
+USERS = {
+    "Pete Hegseth": {"handle": "PeteHegseth",      "id": "34685502"},
+    "Donald Trump":  {"handle": "realDonaldTrump",  "id": "25073877"},
 }
+
+HANDLES = {name: info["handle"] for name, info in USERS.items()}
 
 TRUTH_SOCIAL_RSS = {
     "Pete Hegseth": "https://truthsocial.com/@PeteHegseth/feed.rss",
-    "Donald Trump": "https://truthsocial.com/@realDonaldTrump/feed.rss",
+    "Donald Trump":  "https://truthsocial.com/@realDonaldTrump/feed.rss",
 }
-
-# Public Nitter instances — tried in order, first success wins
-NITTER_INSTANCES = [
-    "https://nitter.privacydev.net",
-    "https://nitter.poast.org",
-    "https://nitter.net",
-    "https://nitter.it",
-    "https://nitter.1d4.us",
-    "https://nitter.fdn.fr",
-]
 
 RECENT_THRESHOLD = timedelta(hours=1)
 
-_HEADERS = {"User-Agent": "Mozilla/5.0 (compatible; TRACKTWO/1.0)"}
+# Twitter's public web bearer token (embedded in twitter.com's own JS bundle)
+_TW_BEARER = (
+    "AAAAAAAAAAAAAAAAAAAAANRILgAAAAAAnNwIzUejRCOuH5E6I8xnZz4puTs"
+    "%3D1Zv7ttfk8LF81IUq16cHjhLTvJu4FA33AGWWjCpTnA"
+)
+
+_UA = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+    "AppleWebKit/537.36 (KHTML, like Gecko) "
+    "Chrome/124.0.0.0 Safari/537.36"
+)
+
+# Known UserTweets GraphQL query IDs — try each until one works.
+# Twitter rotates these with deploys; dynamic discovery updates the list at runtime.
+_TW_QUERY_IDS = [
+    "E3opETHurmVJflFsUBVuUQ",   # 2024 known value
+    "H8OjXpWSvT7UeSLgIdGpFA",   # 2023 fallback
+    "V7H0Ap3_Hh2FyS75OCDO3Q",   # older fallback
+]
+
+# Minimal feature flags required by UserTweets
+_TW_FEATURES = json.dumps({
+    "responsive_web_graphql_exclude_directive_enabled": True,
+    "verified_phone_label_enabled": False,
+    "creator_subscriptions_tweet_preview_api_enabled": True,
+    "responsive_web_graphql_timeline_navigation_enabled": True,
+    "responsive_web_graphql_skip_user_profile_image_extensions_enabled": False,
+    "tweetypie_unmention_optimization_enabled": True,
+    "responsive_web_edit_tweet_api_enabled": True,
+    "graphql_is_translatable_rweb_tweet_is_translatable_enabled": True,
+    "view_counts_everywhere_api_enabled": True,
+    "longform_notetweets_consumption_enabled": True,
+    "tweet_awards_web_tipping_enabled": False,
+    "freedom_of_speech_not_reach_fetch_enabled": True,
+    "standardized_nudges_misinfo": True,
+    "tweet_with_visibility_results_prefer_gql_limited_actions_policy_enabled": False,
+    "longform_notetweets_rich_text_read_enabled": True,
+    "longform_notetweets_inline_media_enabled": False,
+    "responsive_web_enhance_cards_enabled": False,
+}, separators=(",", ":"))
+
+# Nitter instances as a secondary fallback (many are down, kept as last resort)
+_NITTER_INSTANCES = [
+    "https://nitter.privacydev.net",
+    "https://nitter.poast.org",
+    "https://nitter.net",
+    "https://nitter.1d4.us",
+]
 
 # ──────────────────────────────────────────────────────────────────────────────
-# Helpers
+# Twitter guest-token helpers
 # ──────────────────────────────────────────────────────────────────────────────
 
-def _parse_rss_items(xml_text: str, max_items: int) -> list[ET.Element]:
-    root = ET.fromstring(xml_text)
-    channel = root.find("channel")
-    items = channel.findall("item") if channel is not None else root.findall(".//item")
-    return items[:max_items]
+def _activate_guest_token() -> str:
+    """Obtain a short-lived guest token from Twitter's activation endpoint."""
+    resp = requests.post(
+        "https://api.twitter.com/1.1/guest/activate.json",
+        headers={"Authorization": f"Bearer {_TW_BEARER}", "User-Agent": _UA},
+        timeout=8,
+    )
+    resp.raise_for_status()
+    return resp.json()["guest_token"]
 
 
-def _clean_html(raw: str) -> str:
-    return re.sub(r"<[^>]+>", "", html.unescape(raw)).strip()
+def _guest_headers(guest_token: str) -> dict:
+    return {
+        "Authorization": f"Bearer {_TW_BEARER}",
+        "X-Guest-Token": guest_token,
+        "User-Agent": _UA,
+        "X-Twitter-Active-User": "yes",
+        "X-Twitter-Client-Language": "en",
+        "Accept-Language": "en-US,en;q=0.9",
+    }
 
 
-def _parse_date(pub_date: str) -> datetime:
+def _discover_query_id() -> str | None:
+    """
+    Try to extract the current UserTweets queryId from Twitter's JS bundle.
+    Returns None if discovery fails (callers fall back to _TW_QUERY_IDS).
+    """
     try:
-        return parsedate_to_datetime(pub_date).astimezone(timezone.utc)
+        page = requests.get(
+            "https://twitter.com/home",
+            headers={"User-Agent": _UA},
+            timeout=10,
+            allow_redirects=True,
+        )
+        # Find main JS bundle URL
+        match = re.search(
+            r'"(https://abs\.twimg\.com/responsive-web/client-web/main\.[a-f0-9]+\.js)"',
+            page.text,
+        )
+        if not match:
+            return None
+        bundle = requests.get(match.group(1), headers={"User-Agent": _UA}, timeout=15)
+        qid = re.search(r'queryId:"([^"]+)",operationName:"UserTweets"', bundle.text)
+        return qid.group(1) if qid else None
     except Exception:
-        return datetime.now(timezone.utc)
+        return None
+
+
+def _parse_tweet_timeline(data: dict, handle: str) -> list[dict]:
+    """Walk Twitter's deeply nested GraphQL response and extract tweets."""
+    posts = []
+    try:
+        instructions = (
+            data["data"]["user"]["result"]["timeline_v2"]["timeline"]["instructions"]
+        )
+        for instruction in instructions:
+            entries = instruction.get("entries", [])
+            for entry in entries:
+                content = entry.get("content", {})
+                item_content = content.get("itemContent", {})
+                tweet_results = item_content.get("tweet_results", {}).get("result", {})
+
+                # Skip non-tweet entries (cursors, promotions, etc.)
+                if tweet_results.get("__typename") not in ("Tweet", "TweetWithVisibilityResults"):
+                    continue
+
+                # TweetWithVisibilityResults wraps the actual tweet
+                if tweet_results.get("__typename") == "TweetWithVisibilityResults":
+                    tweet_results = tweet_results.get("tweet", {})
+
+                core = tweet_results.get("core", {})
+                legacy = tweet_results.get("legacy", {})
+                if not legacy:
+                    continue
+
+                # Skip retweets and replies
+                if legacy.get("retweeted_status_id_str") or legacy.get("in_reply_to_status_id_str"):
+                    continue
+
+                tweet_id = legacy.get("id_str", "")
+                text = legacy.get("full_text", legacy.get("text", ""))
+                created_raw = legacy.get("created_at", "")
+
+                try:
+                    created_at = datetime.strptime(
+                        created_raw, "%a %b %d %H:%M:%S +0000 %Y"
+                    ).replace(tzinfo=timezone.utc)
+                except Exception:
+                    created_at = datetime.now(timezone.utc)
+
+                metrics = legacy.get("public_metrics") or {}
+                posts.append({
+                    "id": tweet_id,
+                    "text": text,
+                    "created_at": created_at,
+                    "platform": "Twitter/X",
+                    "url": f"https://x.com/{handle}/status/{tweet_id}",
+                    "likes": legacy.get("favorite_count", 0),
+                    "retweets": legacy.get("retweet_count", 0),
+                })
+    except (KeyError, TypeError):
+        pass
+    return posts
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-# Fetchers
+# Public fetchers
 # ──────────────────────────────────────────────────────────────────────────────
 
-def fetch_tweets(handle: str, max_items: int = 10) -> list[dict]:
+def fetch_tweets(handle: str, user_id: str, max_items: int = 10) -> list[dict]:
     """
-    Fetch recent tweets by scraping Nitter RSS feeds.
-    Tries each Nitter instance in NITTER_INSTANCES until one succeeds.
-    No API key required.
+    Fetch recent tweets without an API key using Twitter's guest GraphQL API.
+    Falls back to Nitter RSS if the guest API is unavailable.
     """
+    # 1. Try Twitter guest GraphQL API
+    try:
+        guest_token = _activate_guest_token()
+        headers = _guest_headers(guest_token)
+
+        # Try known query IDs + optionally a freshly discovered one
+        discovered = _discover_query_id()
+        query_ids = ([discovered] if discovered else []) + _TW_QUERY_IDS
+
+        variables = json.dumps({
+            "userId": user_id,
+            "count": max_items,
+            "includePromotedContent": False,
+            "withQuickPromoteEligibilityTweetFields": True,
+            "withVoice": True,
+            "withV2Timeline": True,
+        }, separators=(",", ":"))
+
+        for qid in query_ids:
+            try:
+                resp = requests.get(
+                    f"https://api.twitter.com/graphql/{qid}/UserTweets",
+                    params={"variables": variables, "features": _TW_FEATURES},
+                    headers=headers,
+                    timeout=10,
+                )
+                if resp.status_code == 200:
+                    posts = _parse_tweet_timeline(resp.json(), handle)
+                    if posts:
+                        return posts
+            except Exception:
+                continue
+    except Exception:
+        pass
+
+    # 2. Fallback: Nitter RSS
+    return _fetch_tweets_nitter(handle, max_items)
+
+
+def _fetch_tweets_nitter(handle: str, max_items: int = 10) -> list[dict]:
+    """Secondary fallback: scrape a Nitter RSS feed."""
+    headers = {"User-Agent": _UA}
     last_error = ""
-    for instance in NITTER_INSTANCES:
-        url = f"{instance}/{handle}/rss"
+    for instance in _NITTER_INSTANCES:
         try:
-            resp = requests.get(url, headers=_HEADERS, timeout=8)
+            resp = requests.get(
+                f"{instance}/{handle}/rss", headers=headers, timeout=8
+            )
             resp.raise_for_status()
-            items = _parse_rss_items(resp.text, max_items)
-            posts = []
-            for item in items:
-                title = item.findtext("title", "")
-                description = item.findtext("description", "")
-                link = item.findtext("link", "")
-                pub_date = item.findtext("pubDate", "")
-                guid = item.findtext("guid", link)
-
-                # Convert Nitter link → canonical x.com link
-                # e.g. https://nitter.net/PeteHegseth/status/123 → https://x.com/PeteHegseth/status/123
-                xcom_link = re.sub(
-                    r"https?://[^/]+/([^/]+/status/\d+)",
-                    r"https://x.com/\1",
-                    link,
-                )
-
-                raw = description if description else title
-                text = _clean_html(raw)
-
-                posts.append(
-                    {
-                        "id": guid,
-                        "text": text or title,
-                        "created_at": _parse_date(pub_date),
-                        "platform": "Twitter/X",
-                        "url": xcom_link,
-                        "likes": 0,
-                        "retweets": 0,
-                    }
-                )
-            return posts
+            posts = _parse_rss(resp.text, "Twitter/X", handle, max_items)
+            if posts:
+                return posts
         except Exception as e:
-            last_error = f"{instance}: {e}"
+            last_error = str(e)
             continue
-
-    return [{"error": f"All Nitter instances failed. Last error: {last_error}"}]
+    return [{"error": f"Twitter guest API and all Nitter instances failed. Last: {last_error}"}]
 
 
 def fetch_truth_social(name: str, max_items: int = 10) -> list[dict]:
     """Fetch Truth Social posts via public RSS feed."""
-    feed_url = TRUTH_SOCIAL_RSS[name]
     try:
-        resp = requests.get(feed_url, headers=_HEADERS, timeout=10)
+        resp = requests.get(
+            TRUTH_SOCIAL_RSS[name],
+            headers={"User-Agent": _UA},
+            timeout=10,
+        )
         resp.raise_for_status()
-        items = _parse_rss_items(resp.text, max_items)
-        posts = []
-        for item in items:
-            title = item.findtext("title", "")
-            description = item.findtext("description", "")
-            link = item.findtext("link", "")
-            pub_date = item.findtext("pubDate", "")
-            guid = item.findtext("guid", link)
-
-            raw = description if description else title
-            text = _clean_html(raw)
-
-            posts.append(
-                {
-                    "id": guid,
-                    "text": text or title,
-                    "created_at": _parse_date(pub_date),
-                    "platform": "Truth Social",
-                    "url": link,
-                    "likes": 0,
-                    "retweets": 0,
-                }
-            )
-        return posts
+        return _parse_rss(resp.text, "Truth Social", None, max_items)
     except Exception as e:
         return [{"error": str(e)}]
 
 
-def demo_posts(name: str, platform: str, count: int = 5) -> list[dict]:
-    """Placeholder posts shown when scraping fails."""
-    now = datetime.now(timezone.utc)
-    handle = HANDLES.get(name, "unknown")
+# ──────────────────────────────────────────────────────────────────────────────
+# RSS parsing
+# ──────────────────────────────────────────────────────────────────────────────
+
+def _parse_rss(xml_text: str, platform: str, handle: str | None, max_items: int) -> list[dict]:
+    root = ET.fromstring(xml_text)
+    channel = root.find("channel")
+    items = (channel.findall("item") if channel is not None else root.findall(".//item"))
     posts = []
+    for item in items[:max_items]:
+        title       = item.findtext("title", "")
+        description = item.findtext("description", "")
+        link        = item.findtext("link", "")
+        pub_date    = item.findtext("pubDate", "")
+        guid        = item.findtext("guid", link)
+
+        # Rewrite Nitter links → canonical x.com links
+        if platform == "Twitter/X" and handle:
+            link = re.sub(
+                r"https?://[^/]+/([^/]+/status/\d+)",
+                r"https://x.com/\1",
+                link,
+            )
+
+        try:
+            created_at = parsedate_to_datetime(pub_date).astimezone(timezone.utc)
+        except Exception:
+            created_at = datetime.now(timezone.utc)
+
+        raw  = description if description else title
+        text = re.sub(r"<[^>]+>", "", html.unescape(raw)).strip()
+
+        posts.append({
+            "id":         guid,
+            "text":       text or title,
+            "created_at": created_at,
+            "platform":   platform,
+            "url":        link,
+            "likes":      0,
+            "retweets":   0,
+        })
+    return posts
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Demo / placeholder data
+# ──────────────────────────────────────────────────────────────────────────────
+
+def demo_posts(name: str, platform: str, count: int = 5) -> list[dict]:
+    now    = datetime.now(timezone.utc)
+    handle = HANDLES.get(name, "unknown")
+    posts  = []
     for i in range(count):
         created = now - timedelta(minutes=i * 25)
         url = (
@@ -165,21 +333,19 @@ def demo_posts(name: str, platform: str, count: int = 5) -> list[dict]:
             if platform == "Twitter/X"
             else f"https://truthsocial.com/@{handle}"
         )
-        posts.append(
-            {
-                "id": f"demo-{name}-{platform}-{i}",
-                "text": (
-                    f"[Demo] Sample {platform} post #{i+1} from {name}. "
-                    "Could not reach live data — check network or Nitter instance availability."
-                ),
-                "created_at": created,
-                "platform": platform,
-                "url": url,
-                "author": name,
-                "likes": 0,
-                "retweets": 0,
-            }
-        )
+        posts.append({
+            "id":         f"demo-{name}-{platform}-{i}",
+            "text":       (
+                f"[Demo] Could not reach live {platform} data for {name}. "
+                "Check network connectivity or see README for troubleshooting."
+            ),
+            "created_at": created,
+            "platform":   platform,
+            "url":        url,
+            "author":     name,
+            "likes":      0,
+            "retweets":   0,
+        })
     return posts
 
 
@@ -188,15 +354,10 @@ def demo_posts(name: str, platform: str, count: int = 5) -> list[dict]:
 # ──────────────────────────────────────────────────────────────────────────────
 
 def fetch_all() -> dict:
-    """
-    Fetch all posts for both subjects across both platforms.
-    Returns a dict ready for JSON serialisation (datetimes as ISO strings).
-    Falls back to demo data when scraping fails.
-    """
     results: dict[str, dict] = {}
 
-    for name, handle in HANDLES.items():
-        tweets = fetch_tweets(handle)
+    for name, info in USERS.items():
+        tweets = fetch_tweets(info["handle"], info["id"])
         if not tweets or (len(tweets) == 1 and "error" in tweets[0]):
             tweets = demo_posts(name, "Twitter/X")
 
@@ -208,7 +369,7 @@ def fetch_all() -> dict:
             p["author"] = name
 
         results[name] = {
-            "twitter": _serialise(tweets),
+            "twitter":      _serialise(tweets),
             "truth_social": _serialise(truth),
         }
 
@@ -220,13 +381,12 @@ def fetch_all() -> dict:
 
     return {
         "fetched_at": datetime.now(timezone.utc).isoformat(),
-        "subjects": results,
-        "timeline": all_posts,
+        "subjects":   results,
+        "timeline":   all_posts,
     }
 
 
 def _serialise(posts: list[dict]) -> list[dict]:
-    """Convert datetime objects to ISO-8601 strings for JSON output."""
     out = []
     for p in posts:
         row = dict(p)

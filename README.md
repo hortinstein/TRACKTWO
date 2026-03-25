@@ -16,8 +16,10 @@ Real-time social media tracker for Pete Hegseth and Donald Trump across Twitter/
 
 | Platform | Source |
 |---|---|
-| Twitter/X | Public [Nitter](https://github.com/zedeus/nitter) RSS feeds (tries multiple instances, first success wins) |
+| Twitter/X | Twitter's own guest GraphQL API (same path the `twitter.com` website uses — no key needed). Falls back to Nitter RSS if unavailable. |
 | Truth Social | Public RSS feeds at `truthsocial.com/@handle/feed.rss` |
+
+Twitter's guest API works by activating a short-lived guest token (`POST /1.1/guest/activate.json`) using the same public bearer token embedded in Twitter's own JS bundle, then calling the `UserTweets` GraphQL endpoint. The GraphQL query ID is auto-discovered from Twitter's JS at runtime and falls back to a list of known IDs if discovery fails.
 
 ## Setup
 
@@ -97,15 +99,15 @@ Interactive docs available at `http://localhost:8502/docs` (Swagger UI) when the
 
 Each post includes `"recent": true/false` indicating whether it was posted within the last hour.
 
-## Nitter instances
+## Troubleshooting
 
-Twitter/X scraping uses public Nitter instances tried in this order:
+**Seeing demo placeholder posts?**
+- Twitter guest API: requires outbound access to `api.twitter.com` and `twitter.com`
+- Truth Social RSS: requires outbound access to `truthsocial.com`
+- If you're behind a restrictive proxy, these connections may be blocked
 
-1. `nitter.privacydev.net`
-2. `nitter.poast.org`
-3. `nitter.net`
-4. `nitter.it`
-5. `nitter.1d4.us`
-6. `nitter.fdn.fr`
+**Twitter GraphQL query ID changed?**
+Twitter occasionally rotates the `UserTweets` query ID when they deploy. `scraper.py` auto-discovers the current ID from Twitter's JS bundle at runtime. If discovery also fails, update `_TW_QUERY_IDS` at the top of `scraper.py` with the current value (findable in Twitter's main JS bundle: search for `queryId:"....",operationName:"UserTweets"`).
 
-If all instances are unreachable, the app falls back to demo placeholder posts. You can add or reorder instances in `NITTER_INSTANCES` inside `scraper.py`.
+**Nitter fallback**
+A small list of Nitter instances is tried if the guest API fails. The Nitter project was abandoned by its original maintainer in Jan 2024 but community instances still operate. You can update `_NITTER_INSTANCES` in `scraper.py`.

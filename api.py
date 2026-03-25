@@ -16,7 +16,7 @@ GET /data/{slug}/truth     Truth Social posts only
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 
-from scraper import HANDLES, _serialise, fetch_all, fetch_truth_social, fetch_tweets, demo_posts
+from scraper import USERS, _serialise, fetch_all, fetch_truth_social, fetch_tweets, demo_posts
 
 app = FastAPI(
     title="TRACKTWO API",
@@ -38,9 +38,9 @@ SLUG_MAP = {
 
 
 def _fetch_person(name: str) -> dict:
-    handle = HANDLES[name]
+    info = USERS[name]
 
-    tweets = fetch_tweets(handle)
+    tweets = fetch_tweets(info["handle"], info["id"])
     if not tweets or (len(tweets) == 1 and "error" in tweets[0]):
         tweets = demo_posts(name, "Twitter/X")
 

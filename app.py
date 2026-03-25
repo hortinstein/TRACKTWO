@@ -10,6 +10,7 @@ from streamlit_autorefresh import st_autorefresh
 
 from scraper import (
     HANDLES,
+    USERS,
     RECENT_THRESHOLD,
     fetch_tweets,
     fetch_truth_social,
@@ -186,8 +187,8 @@ st.markdown(
 # ── Fetch ────────────────────────────────────────────────────────────────────
 
 with st.spinner("Fetching posts..."):
-    hegseth_tweets = fetch_tweets(HANDLES["Pete Hegseth"])
-    trump_tweets   = fetch_tweets(HANDLES["Donald Trump"])
+    hegseth_tweets = fetch_tweets(USERS["Pete Hegseth"]["handle"], USERS["Pete Hegseth"]["id"])
+    trump_tweets   = fetch_tweets(USERS["Donald Trump"]["handle"],  USERS["Donald Trump"]["id"])
     hegseth_truth  = fetch_truth_social("Pete Hegseth")
     trump_truth    = fetch_truth_social("Donald Trump")
 
