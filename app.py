@@ -10,9 +10,7 @@ import streamlit as st
 from streamlit_autorefresh import st_autorefresh
 
 from scraper import (
-    HANDLES,
     RECENT_THRESHOLD,
-    fetch_tweets,
     fetch_truth_social,
     demo_posts,
 )
@@ -190,8 +188,6 @@ st.markdown(
 # ── Fetch ────────────────────────────────────────────────────────────────────
 
 with st.spinner("Fetching posts..."):
-    hegseth_tweets = fetch_tweets(HANDLES["Pete Hegseth"])
-    hegseth_truth  = fetch_truth_social("Pete Hegseth")
     trump_truth    = fetch_truth_social("Donald Trump")
 
 def _or_demo(posts, name, platform):
@@ -204,12 +200,8 @@ def _or_demo(posts, name, platform):
         return demo_posts(name, platform)
     return posts
 
-hegseth_tweets = _or_demo(hegseth_tweets, "Pete Hegseth", "Twitter/X")
-hegseth_truth  = _or_demo(hegseth_truth,  "Pete Hegseth",  "Truth Social")
 trump_truth    = _or_demo(trump_truth,    "Donald Trump",  "Truth Social")
 
-for p in hegseth_tweets: p["author"] = "Pete Hegseth"
-for p in hegseth_truth:  p["author"] = "Pete Hegseth"
 for p in trump_truth:    p["author"] = "Donald Trump"
 
 # ── Timestamp ────────────────────────────────────────────────────────────────
@@ -223,34 +215,21 @@ st.markdown(
 
 # ── 3 Columns ────────────────────────────────────────────────────────────────
 
-col1, col2 = st.columns(2)
-
 def _img_tag(path: str, width_pct: int = 25) -> str:
     data = base64.b64encode(open(path, "rb").read()).decode()
     return f"<img src='data:image/webp;base64,{data}' style='width:{width_pct}%;display:block;margin-bottom:8px;'>"
 
-with col1:
-    st.markdown(_img_tag("trump.webp"), unsafe_allow_html=True)
-    with st.container():
-        # st.markdown("<div class='quadrant-box'>", unsafe_allow_html=True)
-        render_feed(trump_truth, "🟠")
-        st.markdown("</div>", unsafe_allow_html=True)
-
-with col2:
-    st.markdown(_img_tag("pete_hegseth.webp"), unsafe_allow_html=True)
-    with st.container():
-        # st.markdown("<div class='quadrant-box'>", unsafe_allow_html=True)
-        render_feed(hegseth_tweets, "🐦")
-        st.markdown("</div>", unsafe_allow_html=True)
+st.markdown(_img_tag("trump.webp"), unsafe_allow_html=True)
+with st.container():
+    render_feed(trump_truth, "🟠")
 
 # ── Timeline ─────────────────────────────────────────────────────────────────
 
 st.markdown("<div style='height:30px'></div>", unsafe_allow_html=True)
 st.markdown(
     "<div class='platform-header' style='font-size:1.2rem; border-bottom:2px solid #444;'>"
-    "📋 Combined Timeline</div>",
+    "📋 Timeline</div>",
     unsafe_allow_html=True,
 )
 
-all_posts = trump_truth + hegseth_tweets
-render_timeline(all_posts)
+render_timeline(trump_truth)
