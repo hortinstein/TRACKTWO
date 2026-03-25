@@ -2,6 +2,7 @@
 TRACKTWO — Social Media Tracker (Streamlit UI)
 """
 
+import base64
 import html
 from datetime import datetime, timedelta, timezone
 
@@ -46,7 +47,10 @@ def format_time_ago(dt) -> str:
 
 def render_post_card(post: dict, platform_icon: str = ""):
     if "error" in post:
-        st.error(f"Error: {post['error']}")
+        if post["error"] == "unavailable":
+            st.warning(post.get("detail", "This platform is currently unavailable."))
+        else:
+            st.error(f"Error: {post['error']}")
         return
 
     recent = is_recent(post)
@@ -187,22 +191,24 @@ st.markdown(
 
 with st.spinner("Fetching posts..."):
     hegseth_tweets = fetch_tweets(HANDLES["Pete Hegseth"])
-    trump_tweets   = fetch_tweets(HANDLES["Donald Trump"])
     hegseth_truth  = fetch_truth_social("Pete Hegseth")
     trump_truth    = fetch_truth_social("Donald Trump")
 
 def _or_demo(posts, name, platform):
-    if not posts or (len(posts) == 1 and "error" in posts[0]):
+    if not posts:
+        return demo_posts(name, platform)
+    if len(posts) == 1 and "error" in posts[0]:
+        # Keep structured unavailable errors as-is (don't replace with demo data)
+        if posts[0].get("error") == "unavailable":
+            return posts
         return demo_posts(name, platform)
     return posts
 
 hegseth_tweets = _or_demo(hegseth_tweets, "Pete Hegseth", "Twitter/X")
-trump_tweets   = _or_demo(trump_tweets,   "Donald Trump",  "Twitter/X")
 hegseth_truth  = _or_demo(hegseth_truth,  "Pete Hegseth",  "Truth Social")
 trump_truth    = _or_demo(trump_truth,    "Donald Trump",  "Truth Social")
 
 for p in hegseth_tweets: p["author"] = "Pete Hegseth"
-for p in trump_tweets:   p["author"] = "Donald Trump"
 for p in hegseth_truth:  p["author"] = "Pete Hegseth"
 for p in trump_truth:    p["author"] = "Donald Trump"
 
@@ -215,39 +221,26 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-# ── 4 Quadrants ──────────────────────────────────────────────────────────────
+# ── 3 Columns ────────────────────────────────────────────────────────────────
 
 col1, col2 = st.columns(2)
 
+def _img_tag(path: str, width_pct: int = 25) -> str:
+    data = base64.b64encode(open(path, "rb").read()).decode()
+    return f"<img src='data:image/webp;base64,{data}' style='width:{width_pct}%;display:block;margin-bottom:8px;'>"
+
 with col1:
-    st.markdown("<div class='platform-header'>🐦 Pete Hegseth — Twitter/X</div>", unsafe_allow_html=True)
+    st.markdown(_img_tag("trump.webp"), unsafe_allow_html=True)
     with st.container():
-        st.markdown("<div class='quadrant-box'>", unsafe_allow_html=True)
-        render_feed(hegseth_tweets, "🐦")
+        # st.markdown("<div class='quadrant-box'>", unsafe_allow_html=True)
+        render_feed(trump_truth, "🟠")
         st.markdown("</div>", unsafe_allow_html=True)
 
 with col2:
-    st.markdown("<div class='platform-header'>🐦 Donald Trump — Twitter/X</div>", unsafe_allow_html=True)
+    st.markdown(_img_tag("pete_hegseth.webp"), unsafe_allow_html=True)
     with st.container():
-        st.markdown("<div class='quadrant-box'>", unsafe_allow_html=True)
-        render_feed(trump_tweets, "🐦")
-        st.markdown("</div>", unsafe_allow_html=True)
-
-st.markdown("<div style='height:20px'></div>", unsafe_allow_html=True)
-col3, col4 = st.columns(2)
-
-with col3:
-    st.markdown("<div class='platform-header'>🟠 Pete Hegseth — Truth Social</div>", unsafe_allow_html=True)
-    with st.container():
-        st.markdown("<div class='quadrant-box'>", unsafe_allow_html=True)
-        render_feed(hegseth_truth, "🟠")
-        st.markdown("</div>", unsafe_allow_html=True)
-
-with col4:
-    st.markdown("<div class='platform-header'>🟠 Donald Trump — Truth Social</div>", unsafe_allow_html=True)
-    with st.container():
-        st.markdown("<div class='quadrant-box'>", unsafe_allow_html=True)
-        render_feed(trump_truth, "🟠")
+        # st.markdown("<div class='quadrant-box'>", unsafe_allow_html=True)
+        render_feed(hegseth_tweets, "🐦")
         st.markdown("</div>", unsafe_allow_html=True)
 
 # ── Timeline ─────────────────────────────────────────────────────────────────
@@ -259,5 +252,5 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-all_posts = hegseth_tweets + trump_tweets + hegseth_truth + trump_truth
+all_posts = trump_truth + hegseth_tweets
 render_timeline(all_posts)

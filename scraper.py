@@ -25,15 +25,16 @@ HANDLES = {
 
 TRUTH_SOCIAL_RSS = {
     "Pete Hegseth": "https://truthsocial.com/@PeteHegseth/feed.rss",
-    "Donald Trump": "https://truthsocial.com/@realDonaldTrump/feed.rss",
+    # trumpstruth.org is a public archive that bypasses Cloudflare on truthsocial.com
+    "Donald Trump": "https://trumpstruth.org/feed",
 }
 
 # Public Nitter instances — tried in order, first success wins
 NITTER_INSTANCES = [
-    "https://nitter.privacydev.net",
-    "https://nitter.poast.org",
     "https://nitter.net",
-    "https://nitter.it",
+    "https://nitter.perennialte.ch",
+    "https://nitter.poast.org",
+    "https://nitter.privacydev.net",
     "https://nitter.1d4.us",
     "https://nitter.fdn.fr",
 ]
@@ -124,8 +125,15 @@ def fetch_truth_social(name: str, max_items: int = 10) -> list[dict]:
     feed_url = TRUTH_SOCIAL_RSS[name]
     try:
         resp = requests.get(feed_url, headers=_HEADERS, timeout=10)
+        if resp.status_code == 403:
+            return [{"error": "unavailable", "detail": "Truth Social is protected by Cloudflare and cannot be scraped directly."}]
         resp.raise_for_status()
+        # Check if we got XML/RSS (not a Cloudflare challenge HTML page)
+        if not resp.text.strip().startswith("<?xml") and "<rss" not in resp.text[:500]:
+            return [{"error": "unavailable", "detail": "Truth Social returned a non-RSS response (possibly a bot-protection page)."}]
         items = _parse_rss_items(resp.text, max_items)
+        # trumpstruth.org uses a custom namespace for the canonical Truth Social URL
+        NS = "https://truthsocial.com/ns"
         posts = []
         for item in items:
             title = item.findtext("title", "")
@@ -133,6 +141,10 @@ def fetch_truth_social(name: str, max_items: int = 10) -> list[dict]:
             link = item.findtext("link", "")
             pub_date = item.findtext("pubDate", "")
             guid = item.findtext("guid", link)
+
+            # Prefer the original Truth Social URL when available (trumpstruth.org feed)
+            original_url = item.findtext(f"{{{NS}}}originalUrl", "")
+            canonical_url = original_url if original_url else link
 
             raw = description if description else title
             text = _clean_html(raw)
@@ -143,7 +155,7 @@ def fetch_truth_social(name: str, max_items: int = 10) -> list[dict]:
                     "text": text or title,
                     "created_at": _parse_date(pub_date),
                     "platform": "Truth Social",
-                    "url": link,
+                    "url": canonical_url,
                     "likes": 0,
                     "retweets": 0,
                 }
