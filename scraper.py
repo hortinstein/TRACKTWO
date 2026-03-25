@@ -19,12 +19,10 @@ import requests
 # ──────────────────────────────────────────────────────────────────────────────
 
 HANDLES = {
-    "Pete Hegseth": "PeteHegseth",
     "Donald Trump": "realDonaldTrump",
 }
 
 TRUTH_SOCIAL_RSS = {
-    "Pete Hegseth": "https://truthsocial.com/@PeteHegseth/feed.rss",
     # trumpstruth.org is a public archive that bypasses Cloudflare on truthsocial.com
     "Donald Trump": "https://trumpstruth.org/feed",
 }

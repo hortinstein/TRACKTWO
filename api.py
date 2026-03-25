@@ -8,7 +8,7 @@ Endpoints
 ---------
 GET /data                  All posts for all subjects + merged timeline
 GET /data/timeline         Merged timeline only (newest first)
-GET /data/{slug}           All posts for one subject  (pete-hegseth | donald-trump)
+GET /data/{slug}           All posts for one subject  (donald-trump)
 GET /data/{slug}/twitter   Twitter/X posts only
 GET /data/{slug}/truth     Truth Social posts only
 """
@@ -20,7 +20,7 @@ from scraper import HANDLES, _serialise, fetch_all, fetch_truth_social, fetch_tw
 
 app = FastAPI(
     title="TRACKTWO API",
-    description="Live social media posts for Pete Hegseth and Donald Trump. No API key required.",
+    description="Live social media posts for Donald Trump. No API key required.",
     version="2.0.0",
 )
 
@@ -32,7 +32,6 @@ app.add_middleware(
 )
 
 SLUG_MAP = {
-    "pete-hegseth": "Pete Hegseth",
     "donald-trump": "Donald Trump",
 }
 
