@@ -7,7 +7,8 @@ Real-time social media tracker for Pete Hegseth and Donald Trump across Twitter/
 - **4-quadrant layout** — Twitter/X (top row) and Truth Social (bottom row) for each person
 - **Combined timeline** — all posts merged in chronological order below the quadrants
 - **Red highlighting** — posts from the last hour get a red border and background
-- **Auto-refresh** — updates every 60 seconds automatically
+- **Auto-refresh** — Streamlit UI updates every 60 seconds automatically
+- **JSON API** — FastAPI endpoint serving all scraped data as JSON
 
 ## Setup
 
@@ -43,6 +44,8 @@ TWITTER_BEARER_TOKEN = "your_bearer_token_here"
 
 When deploying to **Streamlit Cloud**, paste the token under **App settings → Secrets** in the same TOML format.
 
+> The JSON API reads the token from the `TWITTER_BEARER_TOKEN` environment variable (Streamlit secrets are only available inside the Streamlit process).
+
 #### Option B: Environment variable / `.env` file
 
 ```bash
@@ -55,15 +58,79 @@ Edit `.env`:
 TWITTER_BEARER_TOKEN=your_bearer_token_here
 ```
 
-The app checks Streamlit secrets first, then falls back to the environment variable, so both methods work side-by-side.
+The Streamlit app checks Streamlit secrets first, then falls back to the environment variable. The JSON API always uses the environment variable.
 
 ### 4. Run
+
+**Streamlit UI** (port 8501):
 
 ```bash
 streamlit run app.py
 ```
 
-Open [http://localhost:8501](http://localhost:8501) in your browser.
+**JSON API** (port 8502):
+
+```bash
+uvicorn api:app --port 8502
+```
+
+Run both at once:
+
+```bash
+streamlit run app.py & uvicorn api:app --port 8502
+```
+
+---
+
+## JSON API
+
+Interactive docs available at `http://localhost:8502/docs` (Swagger UI) when the API is running.
+
+| Endpoint | Description |
+|---|---|
+| `GET /data` | All posts for all subjects + merged timeline |
+| `GET /data/timeline` | Merged timeline only, newest first |
+| `GET /data/pete-hegseth` | All posts for Pete Hegseth |
+| `GET /data/pete-hegseth/twitter` | Pete Hegseth's Twitter/X posts only |
+| `GET /data/pete-hegseth/truth` | Pete Hegseth's Truth Social posts only |
+| `GET /data/donald-trump` | All posts for Donald Trump |
+| `GET /data/donald-trump/twitter` | Donald Trump's Twitter/X posts only |
+| `GET /data/donald-trump/truth` | Donald Trump's Truth Social posts only |
+
+### Example response — `GET /data`
+
+```json
+{
+  "fetched_at": "2026-03-25T14:00:00+00:00",
+  "subjects": {
+    "Pete Hegseth": {
+      "twitter": [ ... ],
+      "truth_social": [ ... ]
+    },
+    "Donald Trump": {
+      "twitter": [ ... ],
+      "truth_social": [ ... ]
+    }
+  },
+  "timeline": [
+    {
+      "id": "...",
+      "author": "Donald Trump",
+      "platform": "Truth Social",
+      "text": "...",
+      "created_at": "2026-03-25T13:45:00+00:00",
+      "recent": true,
+      "url": "https://truthsocial.com/...",
+      "likes": 0,
+      "retweets": 0
+    }
+  ]
+}
+```
+
+Each post includes a `"recent": true/false` field indicating whether it was posted within the last hour.
+
+---
 
 ## Security
 
